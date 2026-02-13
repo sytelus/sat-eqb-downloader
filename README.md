@@ -1,74 +1,298 @@
-# A Python Library to scrape CollegeBoard
-## Things to Note: 
-- This is the website being scraped: [CollegeBoard SAT Suite Question Bank](https://satsuitequestionbank.collegeboard.org/digital/search)
-- [PyPi Page](https://pypi.org/project/college-board-scraper/)
-- Only the Firefox browser is supported. You must have geckodriver installed. This will be changed in the future.
-- Very long questions or answers aren't fully captured. This will be changed in the future.
-- The scraper is also quite slow, the performance will be improved in future releases.
-- More convenience functions will be added to the `Scraper` class along with ways to change some parameters after they've already been initialized.
+# SAT Educator Question Bank Downloader (College Board)
 
-## Docs:
-### Scraper Class
-An example of creating the CollegeBoard SAT Suite Question Bank webpage scraper:
+Python library and CLI for downloading SAT Suite Educator Question Bank content and rendering assets directly from College Board APIs.
+
+## Key Features
+- No Selenium, Firefox, or browser drivers.
+- API-driven retrieval from the same backend endpoints used by the official website.
+- Full HTML capture for long questions and long rationales (no screenshot truncation).
+- Downloads and rewrites assets for offline rendering:
+  - images
+  - diagrams/charts
+  - `data:` URI media
+  - style URL references and `srcset`
+- Supports both source families:
+  - digital questions (`external_id`)
+  - legacy disclosed questions (`ibn`)
+- Resumable downloads by filter profile with frequent progress checkpoints.
+- Persistent run history and statistics.
+- Retry of previously failed content.
+- Request pacing for rate-limit friendliness.
+- Structured run logs and per-question parse warnings.
+- Runtime anomaly detection with persistent TODO backlog for parser/schema improvements.
+
+## Ubuntu 24.04 Compatibility
+Works on Ubuntu 24.04 with standard Python tooling.
+
+Requirements:
+- Python 3.9+
+- `pip`
+
+Install:
+```bash
+python3 -m pip install -e .
+```
+
+## Dependencies
+Version-ranged dependencies are used (no exact pins):
+- `requests>=2.31.0,<3.0.0`
+- `beautifulsoup4>=4.12.0,<5.0.0`
+
+## Output Location
+All run history and data are written under:
+- `$OUT_DIR/sat_eqb`
+
+Behavior:
+- If `--output-dir` is supplied, that path is treated as `OUT_DIR`.
+- Otherwise environment variable `OUT_DIR` is used.
+- If `OUT_DIR` is not set, current directory is used.
+
+Generated structure:
+- `sat_eqb/dataset/questions/...`
+- `sat_eqb/dataset.jsonl` (main dataset, updated after each run)
+- `sat_eqb/runs/<run_id>/...` where `<run_id>` is UTC date-time stamped
+- `sat_eqb/state/profiles/<profile_id>.json`
+- `sat_eqb/state/latest-run.json`
+- `sat_eqb/history.jsonl`
+- `sat_eqb/todo/TODO.md`
+- `sat_eqb/todo/todo-index.json`
+- `sat_eqb/todo/todo-items.jsonl`
+
+Compatibility note:
+- Existing legacy question folders under `sat_eqb/data/questions` are migrated into `sat_eqb/dataset/questions` on subsequent runs.
+
+## Schema
+See [`SCHEMA.md`](SCHEMA.md) for complete, up-to-date file schemas for:
+- per-question outputs
+- run summaries and statistics
+- profile resume state
+- run history records
+
+## Python API Usage
 ```python
-from college_board_scraper.core import Scraper
+from college_board_scraper import Scraper, ScraperAmount
+
 scraper = Scraper(
-    assessment="SAT", 
+    assessment="SAT",
     test="Math",
-    options=Scraper.valid_math_options,
+    options={"Algebra", "Advanced Math"},
     difficulties={"Easy", "Medium", "Hard"},
-    skills=Scraper.valid_math_skills,
-    exclude_active_questions=True
+    skills={
+        "Algebra": {"Linear equations in one variable", "Linear functions"},
+        "Advanced Math": {"Equivalent expressions"},
+    },
+    exclude_active_questions=True,
+    state="CA",
+    max_requests_per_second=3.0,
 )
+
+records = scraper.scrape(
+    amount=25,
+    output_dir="/tmp/out",         # data written under /tmp/out/sat_eqb
+    restart=False,                 # resume by default
+    download_new=True,             # default
+    download_failed=True,          # default
+    download_assets=True,
+    save_output=True,
+    continue_on_error=True,
+)
+
+print(len(records))
+print(scraper.last_run_summary["status"])
 ```
-What this does is create a scraper that will select the Easy, Medium, and Hard questions that fall under all of the math skills and options of Math portion of 
-the SAT test (which is all of questions). Additionally, it will exclude any questions present in the practice digital SAT tests released by CollegeBoard.
 
-Next, to get the questions, call the `scraper.scrape()` method. The arguments are `amount`, which is the amount of questions that should be scraped from the 
-beginning, or (this is an optional parameter; default is False) supply the `save_images` parameter, which will save the question and answer pngs to their respective directories. 
-If `save_images` is False,
-`scraper.scrape()` will return a List of the question number and the question and answer pngs (type is `List[Tuple[int, Tuple[PngImageFile, PngImageFile]]]`).
-
-### Valid Arguments for the Scraper Class
-Here are some valid arguments for the Scraper Class when you initialize it.
-```python
-valid_assessments: Tuple[str] = ("SAT", "PSAT/NMSQT & PSAT 10", "PSAT 8/9")
-valid_tests: Tuple[str] = ("Reading and Writing", "Math")
-
-valid_reading_and_writing_options: Set[str] = {"Information and Ideas", "Craft and Structure", "Expression of Ideas", "Standard English Conventions"}
-valid_math_options: Set[str] = {"Algebra", "Advanced Math", "Problem-Solving and Data Analysis", "Geometry and Trigonometry"}
-
-# Main Page options
-valid_difficulty_options: Set[str] = {"Easy", "Medium", "Hard"}
-
-valid_reading_and_writing_skills: Dict[str, Set[str]] = {
-    "Information and Ideas": {"Central Ideas and Details", "Inferences", "Command of Evidence"}, 
-    "Craft and Structure": {"Words in Context", "Text Structure and Purpose", "Cross-Text Connections"},
-    "Expression of Ideas": {"Rhetorical Synthesis", "Transitions"},
-    "Standard English Conventions": {"Boundaries", "Form, Structure, and Sense"}
-}
-valid_math_skills: Dict[str, Set[str]] = {
-    "Algebra": {
-        "Linear equations in one variable", "Linear functions", "Linear equations in two variables", 
-        "Systems of two linear equations in two variables", "Linear inequalities in one or two variables"
-    }, 
-    "Advanced Math": {
-        "Nonlinear functions", "Nonlinear equations in one variable and systems of equations in two variables", "Equivalent expressions"
-    }, 
-    "Problem-Solving and Data Analysis": {
-        "Ratios, rates, proportional relationships, and units", "Percentages", 
-        "One-variable data: Distributions and measures of center and spread", "Two-variable data: Models and scatterplots", 
-        "Probability and conditional probability", "Inference from sample statistics and margin of error", 
-        "Evaluating statistical claims: Observational studies and experiments"
-    }, 
-    "Geometry and Trigonometry": {"Area and volume", "Lines, angles, and triangles", "Right triangles and trigonometry", "Circles"}
-}
+## CLI Usage
+Basic example:
+```bash
+college-board-scraper \
+  --assessment "SAT" \
+  --test "Math" \
+  --option "Algebra" \
+  --option "Advanced Math" \
+  --amount 25
 ```
-You can use all of these using `Scraper.[PARAMETER]`. For the arguments that are type `Set` or `Dict`, you can supply any valid subset to the argument. For example, for the
-`valid_math_options` argument, you may supply `{"Advanced Math", "Problem-Solving and Data Analysis", "Algebra"}`. Attempting to supply invalid arguments will result in a `ValueError()`.
-Look at the error message to see what you have done wrong. For the arguments of type `Tuple`, you must choose one of the values.
-If there are any bugs, create a Github Issue detailing your error, and how you caused it.
 
-### ScraperAmount Class
-To declare the ScraperAmount Helper Class, do: `from college_board_scraper.helpers import ScraperAmount`.
-If you want to scrape all of the questions, you can supply the `ScraperAmount.ALL` to the amount parameter. In the future, you can use `ScraperAmount.RANDOM` to get a random amount of random questions.
+Example with skills, difficulty, state standards, and active-item exclusion:
+```bash
+college-board-scraper \
+  --assessment "SAT" \
+  --test "Math" \
+  --option "Algebra" \
+  --option "Advanced Math" \
+  --difficulty "Easy" \
+  --difficulty "Medium" \
+  --difficulty "Hard" \
+  --skill "Algebra:Linear equations in one variable,Linear functions" \
+  --skill "Advanced Math:Equivalent expressions" \
+  --exclude-active-questions \
+  --state CA \
+  --include-state-standards \
+  --amount all
+```
+
+Run only previously failed content for a profile:
+```bash
+college-board-scraper \
+  --assessment "SAT" \
+  --test "Math" \
+  --option "Algebra" \
+  --only-failed
+```
+
+Restart from scratch for a profile (ignore prior progress):
+```bash
+college-board-scraper \
+  --assessment "SAT" \
+  --test "Math" \
+  --option "Algebra" \
+  --restart
+```
+
+## Complete CLI Argument Reference
+- `--assessment <name>`:
+  - Required.
+  - Valid values come from live lookup endpoint (for example `SAT`).
+- `--test <name>`:
+  - Required.
+  - Valid values include `Reading and Writing` and `Math`.
+- `--option <domain>`:
+  - Required, repeatable.
+  - Domain filters within selected test.
+- `--difficulty <Easy|Medium|Hard>`:
+  - Optional, repeatable.
+  - Difficulty filter.
+- `--skill "<Domain>:<skill1>,<skill2>,..."`:
+  - Optional, repeatable.
+  - Skill-level filter by domain.
+- `--state <state code or state name>`:
+  - Optional.
+  - Enables state standards enrichment when combined with `--include-state-standards`.
+- `--amount <N|all>`:
+  - Optional, default `all`.
+  - Max number of rows to process after filtering.
+- `--exclude-active-questions`:
+  - Optional flag.
+  - Excludes currently active digital-test items from result set.
+- `--output-dir <path>`:
+  - Optional.
+  - Base output directory (`OUT_DIR`); actual output root is `<path>/sat_eqb`.
+- `--download-new/--no-download-new`:
+  - Optional, default `--download-new`.
+  - Include/exclude content not yet successfully downloaded in profile state.
+- `--download-failed/--no-download-failed`:
+  - Optional, default `--download-failed`.
+  - Include/exclude content that failed in prior profile runs.
+- `--only-new`:
+  - Convenience alias for `--download-new --no-download-failed`.
+- `--only-failed`:
+  - Convenience alias for `--no-download-new --download-failed`.
+- `--restart`:
+  - Optional flag.
+  - Clears saved profile progress and starts from beginning.
+- `--max-requests-per-second <float>`:
+  - Optional, default `3.0`.
+  - Proactive request pacing to respect endpoint rate limits.
+- `--run-label <text>`:
+  - Optional.
+  - Included in run ID/history for easier traceability.
+- `--include-state-standards/--no-include-state-standards`:
+  - Optional, default `--include-state-standards`.
+  - Toggle state standards fetch when state is set.
+- `--download-assets/--no-download-assets`:
+  - Optional, default `--download-assets`.
+  - Toggle asset downloads and local link rewriting.
+- `--save-output/--no-save-output`:
+  - Optional, default `--save-output`.
+  - Toggle per-question JSON/HTML output persistence.
+- `--continue-on-error/--no-continue-on-error`:
+  - Optional, default `--continue-on-error`.
+  - Continue processing after question-level failures or stop immediately.
+
+## Resumability and Retry Behavior
+- Progress is tracked per filter profile in `state/profiles/<profile_id>.json`.
+- Run checkpoint state is updated frequently in `runs/<run_id>/run-progress.json`.
+- By default, each new run:
+  - skips already successful question downloads,
+  - retries previously failed questions,
+  - downloads newly discovered questions.
+- `--restart` clears profile progress and reprocesses from the beginning.
+- If interrupted (for example Ctrl+C), a subsequent run resumes from persisted successful progress and retries pending/failed items according to flags.
+
+## Rate-Limit Handling
+- Proactive pacing via `--max-requests-per-second` (default `3.0`).
+- Request retries configured for transient errors and `429` responses.
+- `Retry-After` is respected by HTTP retry logic.
+
+## Logging and Reliability Diagnostics
+Each run writes diagnostics to:
+- `runs/<run_id>/run.log`
+- `runs/<run_id>/errors.jsonl`
+- `runs/<run_id>/run-summary.json`
+- `runs/<run_id>/run-stats.json`
+- `runs/<run_id>/stats.yaml`
+- `runs/<run_id>/run-progress.json`
+- `runs/<run_id>/todo-items.jsonl`
+- `runs/<run_id>/todo-summary.json`
+- `runs/<run_id>/todo-items.md`
+- `runs/<run_id>/new_ids.csv`
+- `runs/<run_id>/modified_ids.csv`
+
+Parse irregularities and unexpected source formats are captured as:
+- `parse_warnings` in each `question.json`
+- warning/error logs in `run.log`
+- persistent TODO backlog in `sat_eqb/todo/TODO.md`
+
+## Self-Improvement TODO Loop
+When the scraper encounters unanticipated situations, it records them as TODO items instead of silently dropping context:
+- new/unrecognized source payload fields
+- missing metadata fields
+- unsupported or unknown asset URL/type patterns
+- parse warnings and malformed content blocks
+- complex HTML/media layout patterns that may need renderer updates
+
+Each TODO item includes:
+- timestamp, run ID, profile ID
+- category, severity, summary, recommended action
+- question context (`question_key`, `question_id`) when available
+- structured details payload and deterministic signature for deduplication
+
+Artifacts:
+- Global backlog: `sat_eqb/todo/TODO.md`
+- Structured global index: `sat_eqb/todo/todo-index.json`
+- Append-only TODO event stream: `sat_eqb/todo/todo-items.jsonl`
+- Per-run TODO stream: `sat_eqb/runs/<run_id>/todo-items.jsonl`
+- Per-run TODO summary: `sat_eqb/runs/<run_id>/todo-summary.json`
+- Per-run markdown TODO report: `sat_eqb/runs/<run_id>/todo-items.md`
+
+Run summaries prominently include TODO counts and pointers so triage can happen immediately after every run.
+
+## Metadata and Source Completeness
+Each question output includes:
+- normalized metadata fields for downstream usage
+- full raw table row payload (`raw_table_row`)
+- full raw detail payload (`raw_detail_payload`)
+- compatibility alias (`raw_payload`)
+- lifecycle tracking tags:
+  - `lifecycle.created_run_id`
+  - `lifecycle.modified_run_id`
+  - `lifecycle.create_time`
+  - `lifecycle.modified_time`
+
+This preserves complete source data while providing a stable normalized model.
+
+The root-level main dataset file `sat_eqb/dataset.jsonl` is updated after each run and includes these lifecycle tags for every record.
+
+## Testing
+Fast local tests:
+```bash
+pytest -q tests/test_assets_and_helpers.py
+```
+
+Live integration tests:
+```bash
+RUN_LIVE_TESTS=1 pytest -q tests/test_live_integration.py
+```
+
+## Documentation Map
+- Architecture and implementation notes: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Output/run schema: [`SCHEMA.md`](SCHEMA.md)
