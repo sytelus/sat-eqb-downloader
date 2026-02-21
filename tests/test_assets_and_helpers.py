@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import requests
 
 from college_board_scraper.assets import AssetDownloader
@@ -36,11 +37,8 @@ def test_chunked_returns_expected_slices() -> None:
 
 
 def test_chunked_rejects_non_positive_size() -> None:
-    try:
+    with pytest.raises(ValueError):
         list(chunked([1, 2], 0))
-        raise AssertionError("Expected ValueError for chunk size=0")
-    except ValueError:
-        pass
 
 
 def test_asset_downloader_rewrites_data_uri(tmp_path: Path) -> None:

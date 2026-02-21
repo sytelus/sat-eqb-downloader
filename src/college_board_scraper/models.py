@@ -49,6 +49,7 @@ class QuestionMetadata:
     create_date: Optional[int]
     update_date: Optional[int]
     state_standards: List[str] = field(default_factory=list)
+    original_url: Optional[str] = None
 
 
 @dataclass

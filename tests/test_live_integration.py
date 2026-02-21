@@ -55,11 +55,19 @@ def test_live_download_includes_assets_and_metadata(tmp_path: Path) -> None:
     assert "todo_markdown_path" in summary["todo"]
     assert Path(summary["todo"]["todo_markdown_path"]).exists()
     assert "dataset" in summary
-    assert "dataset_path" in summary
-    assert Path(summary["dataset_path"]).exists()
+    assert "data_path" in summary
+    assert Path(summary["data_path"]).exists()
+    assert "data_stats_path" in summary
+    assert Path(summary["data_stats_path"]).exists()
+    assert summary["processing"]["attempted_count"] >= summary["processing"]["success_count"]
+    assert "question_breakdown" in summary
+    assert "bytes" in summary
+    assert "global_dataset_stats" in summary
+    assert summary["global_dataset_stats"]["total_records"] >= len(records)
 
     root_dir = Path(summary["root_dir"])
     assert root_dir == tmp_path / "sat_eqb"
+    assert (root_dir / "data-stats.json").exists()
     assert (root_dir / "history.jsonl").exists()
     assert (root_dir / "state" / "latest-run.json").exists()
     assert (root_dir / "todo" / "TODO.md").exists()
@@ -86,7 +94,9 @@ def test_live_download_includes_assets_and_metadata(tmp_path: Path) -> None:
         question_dir = root_dir / data_path
         assert question_dir.exists()
         assert (question_dir / "question.json").exists()
+        assert (question_dir / "question.md").exists()
         question_payload = json.loads((question_dir / "question.json").read_text(encoding="utf-8"))
+        assert question_payload["metadata"].get("original_url")
         lifecycle = question_payload.get("lifecycle", {})
         assert lifecycle.get("created_run_id")
         assert lifecycle.get("modified_run_id")

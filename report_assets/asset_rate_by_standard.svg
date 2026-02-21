@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="444">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="380" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="700">Asset Rate by Standard (&gt;=20 Questions)</text>
+<text x="370" y="90" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-CP.1</text>
+<rect x="380" y="76" width="760.00" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1148.00" y="90" font-family="Arial, sans-serif" font-size="12">48.8%</text>
+<text x="370" y="118" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-CP.4</text>
+<rect x="380" y="104" width="760.00" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1148.00" y="118" font-family="Arial, sans-serif" font-size="12">48.8%</text>
+<text x="370" y="146" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-CP.6</text>
+<rect x="380" y="132" width="760.00" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1148.00" y="146" font-family="Arial, sans-serif" font-size="12">48.8%</text>
+<text x="370" y="174" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-CP.7</text>
+<rect x="380" y="160" width="760.00" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1148.00" y="174" font-family="Arial, sans-serif" font-size="12">48.8%</text>
+<text x="370" y="202" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-ID.5</text>
+<rect x="380" y="188" width="760.00" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1148.00" y="202" font-family="Arial, sans-serif" font-size="12">48.8%</text>
+<text x="370" y="230" text-anchor="end" font-family="Arial, sans-serif" font-size="13">A-APR.1</text>
+<rect x="380" y="216" width="686.55" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1074.55" y="230" font-family="Arial, sans-serif" font-size="12">44.1%</text>
+<text x="370" y="258" text-anchor="end" font-family="Arial, sans-serif" font-size="13">A-APR.6</text>
+<rect x="380" y="244" width="686.55" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1074.55" y="258" font-family="Arial, sans-serif" font-size="12">44.1%</text>
+<text x="370" y="286" text-anchor="end" font-family="Arial, sans-serif" font-size="13">N-RN.2</text>
+<rect x="380" y="272" width="686.55" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1074.55" y="286" font-family="Arial, sans-serif" font-size="12">44.1%</text>
+<text x="370" y="314" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-IC.4</text>
+<rect x="380" y="300" width="648.41" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1036.41" y="314" font-family="Arial, sans-serif" font-size="12">41.7%</text>
+<text x="370" y="342" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-ID.4</text>
+<rect x="380" y="328" width="648.41" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1036.41" y="342" font-family="Arial, sans-serif" font-size="12">41.7%</text>
+<text x="370" y="370" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-ID.6</text>
+<rect x="380" y="356" width="642.24" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1030.24" y="370" font-family="Arial, sans-serif" font-size="12">41.3%</text>
+<text x="370" y="398" text-anchor="end" font-family="Arial, sans-serif" font-size="13">S-ID.7</text>
+<rect x="380" y="384" width="642.24" height="18" fill="#0f766e" opacity="0.88" />
+<text x="1030.24" y="398" font-family="Arial, sans-serif" font-size="12">41.3%</text>
+</svg>

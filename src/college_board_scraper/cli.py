@@ -189,12 +189,16 @@ def main(argv: List[str] | None = None) -> int:
     )
 
     run_summary = scraper.last_run_summary
+    output_root = run_summary.get("root_dir") if isinstance(run_summary, dict) else None
+    if not output_root:
+        output_root = str((Path(args.output_dir) / "sat_eqb").resolve())
+
     summary = {
         "downloaded": len(records),
         "errors": scraper.last_errors,
         "run_summary": run_summary,
         "todo": run_summary.get("todo", {}),
-        "output_root": str((Path(args.output_dir) / "sat_eqb").resolve()),
+        "output_root": output_root,
     }
     print(json.dumps(summary, indent=2))
     return 0

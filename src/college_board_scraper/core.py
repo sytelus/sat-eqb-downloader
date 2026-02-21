@@ -20,7 +20,9 @@ from urllib3.util.retry import Retry
 
 from .assets import AssetDownloader
 from .helpers import ScraperAmount, chunked
+from .markdown_export import render_question_markdown
 from .models import AnswerOption, QuestionContent, QuestionMetadata, QuestionRecord
+from .urls import build_original_question_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -147,6 +149,11 @@ class Scraper:
     _EXPECTED_LEGACY_ANSWER_KEYS: Set[str] = {"choices", "correct_choice", "correct_spr", "rationale", "style"}
     _EXPECTED_LEGACY_CHOICE_KEYS: Set[str] = {"body"}
     _EXPECTED_LEGACY_CORRECT_SPR_KEYS: Set[str] = {"absolute", "rationale"}
+    _FOOTNOTE_REF_NAME_PATTERN = r"(?:^fn|footnote|^note)"
+    _INSTRUCTION_STRUCTURE_PATTERNS: Tuple[str, ...] = (
+        r"<h[1-6][^>]*>\s*instructions?\s*:?\s*</h[1-6]>",
+        r"<(?:p|div|li|span)[^>]*>\s*(?:<strong>\s*)?instructions?\s*:",
+    )
 
     def __init__(
         self,
@@ -260,10 +267,11 @@ class Scraper:
         todo_items_path = paths["todo_dir"] / "todo-items.jsonl"
         todo_index_path = paths["todo_dir"] / "todo-index.json"
         todo_markdown_path = paths["todo_dir"] / "TODO.md"
-        dataset_path = paths["dataset_path"]
+        data_path = paths["data_path"]
+        data_stats_path = paths["data_stats_path"]
 
         dataset_index = self._load_dataset_index(
-            dataset_path=dataset_path,
+            data_path=data_path,
             questions_dir=paths["questions_dir"],
         )
         new_dataset_rows: List[Dict[str, str]] = []
@@ -339,6 +347,7 @@ class Scraper:
         results: List[QuestionRecord] = []
         interrupted = False
         fatal_exception: Optional[Exception] = None
+        fatal_should_raise = False
 
         profile_state = self._load_profile_state(profile_state_path, profile_id=profile_id, filters=profile_filters)
         if restart:
@@ -415,6 +424,14 @@ class Scraper:
                 question_key = self._question_key_from_row(row)
                 question_id = str(row.get("questionId") or row.get("uId") or "")
                 LOGGER.info("Processing %d/%d question_id=%s key=%s", position, total_candidates, question_id, question_key)
+                row_domain, row_difficulty, row_source = self._classify_row_for_stats(row)
+                self._increment_named_counter(self._run_stats["processing"], "attempted_count")
+                self._record_question_breakdown(
+                    outcome="attempted",
+                    domain=row_domain,
+                    difficulty=row_difficulty,
+                    source=row_source,
+                )
                 self._write_run_progress(
                     stage="processing",
                     run_id=run_id,
@@ -432,7 +449,7 @@ class Scraper:
                         question_key=question_key,
                         question_id=question_id,
                     )
-                    metadata = self._build_metadata(row, standards_map)
+                    metadata = self._build_metadata(row, standards_map, source=row_source)
                     detail_payload, source = self._resolve_detail_payload(row, digital_payloads)
                     self._inspect_detail_payload(
                         source=source,
@@ -498,18 +515,15 @@ class Scraper:
                             question_key=question_key,
                         )
 
-                    lifecycle_status, record = self._apply_record_lifecycle(
-                        record=record,
-                        question_dir=question_dir,
-                        run_id=run_id,
-                        observed_at_utc=_utc_now_iso(),
-                    )
-                    self._run_stats["dataset"][f"{lifecycle_status}_count"] = int(
-                        self._run_stats["dataset"].get(f"{lifecycle_status}_count", 0)
-                    ) + 1
-
                     if save_output:
-                        self._write_question_output(record, question_dir)
+                        lifecycle_status, record = self._apply_record_lifecycle(
+                            record=record,
+                            question_dir=question_dir,
+                            run_id=run_id,
+                            observed_at_utc=_utc_now_iso(),
+                        )
+                        self._increment_named_counter(self._run_stats["dataset"], f"{lifecycle_status}_count")
+                        output_sizes = self._write_question_output(record, question_dir)
                         dataset_index[question_key] = record.to_dict()
                         if lifecycle_status == "new":
                             new_dataset_rows.append(
@@ -529,6 +543,9 @@ class Scraper:
                                     "ibn": record.metadata.ibn or "",
                                 }
                             )
+                    else:
+                        lifecycle_status = "unchanged"
+                        output_sizes = {"json_bytes": 0, "html_bytes": 0}
 
                     results.append(record)
                     self._record_success(
@@ -540,10 +557,18 @@ class Scraper:
                     )
                     self._save_profile_state(profile_state_path, profile_state)
 
-                    self._run_stats["processing"]["processed_count"] += 1
-                    self._run_stats["processing"]["success_count"] += 1
-                    self._run_stats["sources"][source] = self._run_stats["sources"].get(source, 0) + 1
+                    self._increment_named_counter(self._run_stats["processing"], "processed_count")
+                    self._increment_named_counter(self._run_stats["processing"], "success_count")
+                    self._increment_named_counter(self._run_stats["sources"], source)
+                    self._record_question_breakdown(
+                        outcome="success",
+                        domain=record.metadata.domain,
+                        difficulty=record.metadata.difficulty,
+                        source=source,
+                        question_type=record.content.question_type,
+                    )
                     self._update_asset_stats(record)
+                    self._update_record_byte_stats(record, output_sizes=output_sizes)
                     self._write_run_progress(
                         stage="processing",
                         run_id=run_id,
@@ -569,11 +594,20 @@ class Scraper:
                         total_candidates=total_candidates,
                     )
                     break
-                except Exception as exc:  # pylint: disable=broad-except
+                except Exception as exc:
                     error_message = f"Failed question key={question_key}: {exc}"
                     self.last_errors.append(error_message)
-                    self._run_stats["processing"]["processed_count"] += 1
-                    self._run_stats["processing"]["failed_count"] += 1
+                    self._increment_named_counter(self._run_stats["processing"], "processed_count")
+                    self._increment_named_counter(self._run_stats["processing"], "failed_count")
+                    failed_by_error_type = self._run_stats["processing"].setdefault("failed_by_error_type", {})
+                    error_type = exc.__class__.__name__
+                    self._increment_named_counter(failed_by_error_type, error_type)
+                    self._record_question_breakdown(
+                        outcome="failed",
+                        domain=row_domain,
+                        difficulty=row_difficulty,
+                        source=row_source,
+                    )
 
                     self._record_failure(
                         profile_state=profile_state,
@@ -623,6 +657,7 @@ class Scraper:
 
                     if not continue_on_error:
                         fatal_exception = exc
+                        fatal_should_raise = True
                         break
 
             self._run_stats["timing"]["processing_seconds"] = round(time.monotonic() - process_started, 4)
@@ -632,6 +667,38 @@ class Scraper:
             LOGGER.warning("Run interrupted by user")
             self._write_run_progress(
                 stage="interrupted",
+                run_id=run_id,
+                profile_id=profile_id,
+                run_dir=run_dir,
+            )
+        except Exception as exc:
+            fatal_exception = exc
+            fatal_should_raise = True
+            error_message = f"Run failed before completion: {exc}"
+            self.last_errors.append(error_message)
+            LOGGER.exception(error_message)
+            self._append_jsonl(
+                run_errors_path,
+                {
+                    "timestamp_utc": _utc_now_iso(),
+                    "question_key": None,
+                    "question_id": None,
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            self._record_todo_item(
+                category="run_fatal_error",
+                summary="Fatal run-level exception",
+                severity="error",
+                details={
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc),
+                },
+                recommended_action="Inspect traceback and improve retry/fallback behavior for this failure path.",
+            )
+            self._write_run_progress(
+                stage="failed",
                 run_id=run_id,
                 profile_id=profile_id,
                 run_dir=run_dir,
@@ -661,10 +728,12 @@ class Scraper:
             )
 
             if save_output:
-                self._write_dataset_jsonl(dataset_path, dataset_index)
+                self._write_dataset_jsonl(data_path, dataset_index)
             self._run_stats["dataset"]["total_records_after_run"] = len(dataset_index)
             self._write_id_csv(run_new_ids_path, new_dataset_rows)
             self._write_id_csv(run_modified_ids_path, modified_dataset_rows)
+            global_dataset_stats = self._compute_global_dataset_stats(dataset_index)
+            self._write_json_atomic(data_stats_path, global_dataset_stats)
             self._write_run_todo_markdown(
                 run_todo_markdown_path,
                 todo_summary=todo_summary,
@@ -685,14 +754,18 @@ class Scraper:
                 "root_dir": str(root_dir),
                 "run_dir": str(run_dir),
                 "run_progress_path": str(run_progress_path),
-                "dataset_path": str(dataset_path),
+                "data_path": str(data_path),
+                "data_stats_path": str(data_stats_path),
                 "profile_state_path": str(profile_state_path),
                 "selection": self._run_stats["selection"],
                 "processing": self._run_stats["processing"],
                 "requests": self._run_stats["requests"],
                 "sources": self._run_stats["sources"],
+                "question_breakdown": self._run_stats["question_breakdown"],
                 "assets": self._run_stats["assets"],
+                "bytes": self._run_stats["bytes"],
                 "dataset": self._run_stats["dataset"],
+                "global_dataset_stats": global_dataset_stats,
                 "parsing": self._run_stats["parsing"],
                 "todo": todo_summary,
                 "run_artifacts": {
@@ -743,6 +816,7 @@ class Scraper:
                     "dataset": {
                         "new_count": self._run_stats["dataset"]["new_count"],
                         "modified_count": self._run_stats["dataset"]["modified_count"],
+                        "total_records_after_run": self._run_stats["dataset"]["total_records_after_run"],
                     },
                     "todo": {
                         "total_items": todo_summary["total_items"],
@@ -763,6 +837,7 @@ class Scraper:
                     "finished_at_utc": ended_at_utc,
                     "run_dir": str(run_dir),
                     "todo_items": todo_summary["total_items"],
+                    "dataset_total_records": self._run_stats["dataset"]["total_records_after_run"],
                 },
             )
 
@@ -782,7 +857,7 @@ class Scraper:
             self._active_run_todo_category_counts = {}
             self._active_run_todo_severity_counts = {}
 
-        if fatal_exception is not None and not continue_on_error:
+        if fatal_exception is not None and fatal_should_raise:
             raise fatal_exception
 
         return results
@@ -839,14 +914,11 @@ class Scraper:
         try:
             response = self._session.request(method=method, url=url, timeout=timeout, **kwargs)
             elapsed_seconds = round(time.monotonic() - started, 6)
-            response_bytes = 0
-            content_length = response.headers.get("Content-Length")
-            if content_length and str(content_length).strip().isdigit():
-                response_bytes = int(str(content_length).strip())
+            response_bytes = self._response_size_bytes(response)
             self._record_request_response(endpoint, response.status_code, elapsed_seconds, response_bytes=response_bytes)
             response.raise_for_status()
             return response
-        except Exception:
+        except requests.RequestException:
             self._record_request_exception(endpoint)
             raise
 
@@ -1516,28 +1588,33 @@ class Scraper:
         if not joined_html:
             return
 
-        lowered = joined_html.lower()
-        if "footnote" in lowered:
+        unresolved_footnotes = self._find_unresolved_footnote_refs(joined_html)
+        if unresolved_footnotes:
             self._record_todo_item(
                 category="footnote_marker_detected",
-                summary="Footnote marker detected in content HTML",
+                summary="Unresolved footnote reference detected in content HTML",
                 severity="info",
                 question_key=question_key,
                 question_id=question_id,
                 source=source,
-                details={"source": source, "marker": "footnote"},
-                recommended_action="Confirm footnotes are preserved/rendered correctly in normalized output.",
+                details={
+                    "source": source,
+                    "marker": "footnote_unresolved_ref",
+                    "unresolved_refs": unresolved_footnotes[:10],
+                    "unresolved_count": len(unresolved_footnotes),
+                },
+                recommended_action="Ensure footnote reference anchors map to existing local targets in rendered HTML.",
             )
 
-        if "instruction" in lowered:
+        if self._contains_pattern(joined_html, self._INSTRUCTION_STRUCTURE_PATTERNS):
             self._record_todo_item(
                 category="instruction_marker_detected",
-                summary="Instruction marker detected in content HTML",
+                summary="Instruction-like structural marker detected in content HTML",
                 severity="info",
                 question_key=question_key,
                 question_id=question_id,
                 source=source,
-                details={"source": source, "marker": "instruction"},
+                details={"source": source, "marker": "instruction_structure"},
                 recommended_action="Verify instruction text placement in rendered question output.",
             )
 
@@ -1554,6 +1631,25 @@ class Scraper:
                 details={"source": source, "tags": complex_tags},
                 recommended_action="Review rendering/downloading support for these media tags.",
             )
+
+    @staticmethod
+    def _contains_pattern(html_fragment: str, patterns: Sequence[str]) -> bool:
+        return any(re.search(pattern, html_fragment, flags=re.IGNORECASE) for pattern in patterns)
+
+    @classmethod
+    def _find_unresolved_footnote_refs(cls, html_fragment: str) -> List[str]:
+        ids = {value.lower() for value in re.findall(r"\bid\s*=\s*['\"]([^'\"]+)['\"]", html_fragment, flags=re.IGNORECASE)}
+        refs = re.findall(r"href\s*=\s*['\"]#([^'\"]+)['\"]", html_fragment, flags=re.IGNORECASE)
+        unresolved: List[str] = []
+        for ref in refs:
+            normalized = ref.lower().strip()
+            if not normalized:
+                continue
+            if not re.search(cls._FOOTNOTE_REF_NAME_PATTERN, normalized, flags=re.IGNORECASE):
+                continue
+            if normalized not in ids:
+                unresolved.append(ref)
+        return sorted(set(unresolved))
 
     def _inspect_key_drift(
         self,
@@ -1870,6 +1966,9 @@ class Scraper:
                 "updated_at_utc": _utc_now_iso(),
                 "selection": dict(self._run_stats.get("selection", {})),
                 "processing": dict(self._run_stats.get("processing", {})),
+                "question_breakdown": self._sanitize_for_json(self._run_stats.get("question_breakdown", {})),
+                "assets": dict(self._run_stats.get("assets", {})),
+                "bytes": dict(self._run_stats.get("bytes", {})),
                 "dataset": dict(self._run_stats.get("dataset", {})),
                 "todo": {
                     "total_items": int(self._active_run_todo_counts.get("total_items", 0)),
@@ -1885,7 +1984,7 @@ class Scraper:
             self._write_json_atomic(run_dir / "run-progress.json", payload)
             progress_stats = self._run_stats.setdefault("progress", {})
             progress_stats["checkpoints_written"] = int(progress_stats.get("checkpoints_written", 0)) + 1
-        except Exception:  # pylint: disable=broad-except
+        except (OSError, TypeError, ValueError):
             LOGGER.warning("Failed to write run progress checkpoint for run_id=%s", run_id, exc_info=True)
 
     @staticmethod
@@ -1896,51 +1995,91 @@ class Scraper:
         if len(values) > limit:
             del values[0 : len(values) - limit]
 
-    def _sanitize_for_json(self, value: Any) -> Any:
+    def _sanitize_for_json(self, value: Any, *, max_string_length: Optional[int] = 2000) -> Any:
         if isinstance(value, dict):
-            return {str(key): self._sanitize_for_json(item) for key, item in value.items()}
+            return {
+                str(key): self._sanitize_for_json(item, max_string_length=max_string_length)
+                for key, item in value.items()
+            }
         if isinstance(value, (list, tuple, set)):
-            return [self._sanitize_for_json(item) for item in value]
+            return [self._sanitize_for_json(item, max_string_length=max_string_length) for item in value]
         if isinstance(value, (str, int, float, bool)) or value is None:
-            if isinstance(value, str) and len(value) > 2000:
-                return value[:1997] + "..."
+            if isinstance(value, str) and max_string_length is not None and len(value) > max_string_length:
+                if max_string_length <= 3:
+                    return value[:max_string_length]
+                return value[: max_string_length - 3] + "..."
             return value
         return str(value)
 
     # ---------- Serialization ----------
 
-    def _build_metadata(self, row: Dict[str, Any], standards_map: Dict[str, List[str]]) -> QuestionMetadata:
+    def _build_metadata(
+        self,
+        row: Dict[str, Any],
+        standards_map: Dict[str, List[str]],
+        *,
+        source: str,
+    ) -> QuestionMetadata:
         difficulty_code = self._clean_nullable(row.get("difficulty")) or ""
         skill_code = self._clean_nullable(row.get("skill_cd")) or ""
+        question_id = str(row.get("questionId") or row.get("uId") or "")
+        external_id = self._clean_nullable(row.get("external_id"))
+        ibn = self._clean_nullable(row.get("ibn"))
+        domain = str(row.get("primary_class_cd_desc") or "")
+        domain_code = str(row.get("primary_class_cd") or "")
+        difficulty = self._CODE_TO_DIFFICULTY.get(difficulty_code, difficulty_code or "Unknown")
 
         return QuestionMetadata(
-            question_id=str(row.get("questionId") or row.get("uId") or ""),
+            question_id=question_id,
             assessment=self.assessment,
             assessment_id=self._assessment_id_by_name[self.assessment],
             test=self.test,
             test_id=self._test_id_by_name[self.test],
-            domain=str(row.get("primary_class_cd_desc") or ""),
-            domain_code=str(row.get("primary_class_cd") or ""),
+            domain=domain,
+            domain_code=domain_code,
             skill=str(row.get("skill_desc") or ""),
             skill_code=skill_code,
-            difficulty=self._CODE_TO_DIFFICULTY.get(difficulty_code, difficulty_code or "Unknown"),
+            difficulty=difficulty,
             score_band_range=row.get("score_band_range_cd"),
-            external_id=self._clean_nullable(row.get("external_id")),
-            ibn=self._clean_nullable(row.get("ibn")),
+            external_id=external_id,
+            ibn=ibn,
             program=self._clean_nullable(row.get("program")),
             create_date=row.get("createDate"),
             update_date=row.get("updateDate"),
             state_standards=standards_map.get(skill_code, []),
+            original_url=build_original_question_url(
+                source=source,
+                assessment=self.assessment,
+                test=self.test,
+                question_id=question_id,
+                external_id=external_id,
+                ibn=ibn,
+                domain=domain,
+                domain_code=domain_code,
+                skill_code=skill_code,
+                difficulty=difficulty,
+            ),
         )
 
-    def _write_question_output(self, record: QuestionRecord, question_dir: Path) -> None:
+    def _write_question_output(self, record: QuestionRecord, question_dir: Path) -> Dict[str, int]:
         question_dir.mkdir(parents=True, exist_ok=True)
 
         json_path = question_dir / "question.json"
-        json_path.write_text(json.dumps(record.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        json_text = json.dumps(record.to_dict(), ensure_ascii=False, indent=2)
+        json_path.write_text(json_text, encoding="utf-8")
 
         html_path = question_dir / "question.html"
-        html_path.write_text(self._render_question_html(record), encoding="utf-8")
+        html_text = self._render_question_html(record)
+        html_path.write_text(html_text, encoding="utf-8")
+
+        markdown_path = question_dir / "question.md"
+        markdown_text = render_question_markdown(record)
+        markdown_path.write_text(markdown_text, encoding="utf-8")
+        return {
+            "json_bytes": len(json_text.encode("utf-8")),
+            "html_bytes": len(html_text.encode("utf-8")),
+            "markdown_bytes": len(markdown_text.encode("utf-8")),
+        }
 
     def _render_question_html(self, record: QuestionRecord) -> str:
         meta = record.metadata
@@ -2015,6 +2154,7 @@ class Scraper:
       <tr><th>Skill</th><td>{html.escape(meta.skill)} ({html.escape(meta.skill_code)})</td></tr>
       <tr><th>Difficulty</th><td>{html.escape(meta.difficulty)}</td></tr>
       <tr><th>Question Source</th><td>{html.escape(record.source)}</td></tr>
+      <tr><th>Original URL</th><td><a href="{html.escape(meta.original_url or '')}" target="_blank" rel="noreferrer">{html.escape(meta.original_url or '')}</a></td></tr>
       <tr><th>External ID</th><td>{html.escape(meta.external_id or "")}</td></tr>
       <tr><th>IBN</th><td>{html.escape(meta.ibn or "")}</td></tr>
       <tr><th>Correct Answer(s)</th><td>{html.escape(correct_answers)}</td></tr>
@@ -2040,9 +2180,10 @@ class Scraper:
         return base / "sat_eqb"
 
     def _ensure_output_layout(self, root_dir: Path) -> Dict[str, Path]:
-        dataset_dir = root_dir / "dataset"
-        questions_dir = dataset_dir / "questions"
-        dataset_path = root_dir / "dataset.jsonl"
+        data_dir = root_dir / "data"
+        questions_dir = data_dir / "questions"
+        data_path = root_dir / "data.jsonl"
+        data_stats_path = root_dir / "data-stats.json"
         runs_dir = root_dir / "runs"
         todo_dir = root_dir / "todo"
         state_dir = root_dir / "state"
@@ -2052,10 +2193,44 @@ class Scraper:
         for path in (questions_dir, runs_dir, profiles_dir, todo_dir):
             path.mkdir(parents=True, exist_ok=True)
 
+        legacy_dataset_dir = root_dir / "dataset"
+        if legacy_dataset_dir.exists():
+            legacy_questions_dir = legacy_dataset_dir / "questions"
+            if legacy_questions_dir.exists():
+                for legacy_dir in sorted(legacy_questions_dir.glob("*")):
+                    if not legacy_dir.is_dir():
+                        continue
+                    target_dir = questions_dir / legacy_dir.name
+                    if target_dir.exists():
+                        continue
+                    target_dir.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        legacy_dir.rename(target_dir)
+                    except OSError:
+                        shutil.move(str(legacy_dir), str(target_dir))
+                    LOGGER.info("Migrated question directory from %s to %s", legacy_dir, target_dir)
+
+            legacy_dataset_jsonl = root_dir / "dataset.jsonl"
+            if legacy_dataset_jsonl.exists() and not data_path.exists():
+                try:
+                    legacy_dataset_jsonl.rename(data_path)
+                except OSError:
+                    shutil.move(str(legacy_dataset_jsonl), str(data_path))
+                LOGGER.info("Migrated dataset index from %s to %s", legacy_dataset_jsonl, data_path)
+
+            legacy_dataset_stats = root_dir / "dataset-stats.json"
+            if legacy_dataset_stats.exists() and not data_stats_path.exists():
+                try:
+                    legacy_dataset_stats.rename(data_stats_path)
+                except OSError:
+                    shutil.move(str(legacy_dataset_stats), str(data_stats_path))
+                LOGGER.info("Migrated dataset stats from %s to %s", legacy_dataset_stats, data_stats_path)
+
         return {
             "root_dir": root_dir,
-            "dataset_dir": dataset_dir,
-            "dataset_path": dataset_path,
+            "data_dir": data_dir,
+            "data_path": data_path,
+            "data_stats_path": data_stats_path,
             "questions_dir": questions_dir,
             "runs_dir": runs_dir,
             "todo_dir": todo_dir,
@@ -2136,13 +2311,13 @@ class Scraper:
         if existing:
             existing_path = Path(existing)
             parts = existing_path.parts
-            if len(parts) >= 3 and parts[0] == "data" and parts[1] == "questions":
-                return Path("dataset") / "questions" / parts[-1]
+            if len(parts) >= 3 and parts[0] == "dataset" and parts[1] == "questions":
+                return Path("data") / "questions" / parts[-1]
             return existing_path
 
         digest = hashlib.sha1(question_key.encode("utf-8")).hexdigest()[:12]
         dir_name = f"{question_id or 'question'}-{digest}"
-        return Path("dataset") / "questions" / dir_name
+        return Path("data") / "questions" / dir_name
 
     def _record_success(
         self,
@@ -2295,6 +2470,7 @@ class Scraper:
                 "raw_detail_payload_total": 0,
                 "written_question_json_total": 0,
                 "written_question_html_total": 0,
+                "written_question_markdown_total": 0,
             },
             "dataset": {
                 "new_count": 0,
@@ -2375,6 +2551,13 @@ class Scraper:
         )
         endpoint_info["failed"] = int(endpoint_info.get("failed", 0)) + 1
 
+    @staticmethod
+    def _response_size_bytes(response: requests.Response) -> int:
+        content_length = response.headers.get("Content-Length")
+        if content_length and str(content_length).strip().isdigit():
+            return int(str(content_length).strip())
+        return len(response.content or b"")
+
     def _classify_endpoint(self, url: str) -> str:
         if url == self.LOOKUP_URL:
             return "lookup"
@@ -2404,6 +2587,78 @@ class Scraper:
             by_source_type[source_type] = int(by_source_type.get(source_type, 0)) + 1
 
         assets_block["total_bytes"] = total_bytes
+
+    def _classify_row_for_stats(self, row: Dict[str, Any]) -> Tuple[str, str, str]:
+        domain = str(row.get("primary_class_cd_desc") or "Unknown").strip() or "Unknown"
+        difficulty_code = self._clean_nullable(row.get("difficulty")) or ""
+        difficulty = self._CODE_TO_DIFFICULTY.get(difficulty_code, difficulty_code or "Unknown")
+
+        external_id = self._clean_nullable(row.get("external_id"))
+        ibn = self._clean_nullable(row.get("ibn"))
+        if external_id:
+            source = "digital"
+        elif ibn:
+            source = "legacy"
+        else:
+            source = "unknown"
+        return domain, difficulty, source
+
+    def _record_question_breakdown(
+        self,
+        *,
+        outcome: str,
+        domain: str,
+        difficulty: str,
+        source: str,
+        question_type: Optional[str] = None,
+    ) -> None:
+        breakdown = self._run_stats.setdefault("question_breakdown", {})
+        outcome_bucket = breakdown.setdefault(outcome, {})
+        self._increment_counter(outcome_bucket.setdefault("by_domain", {}), domain or "Unknown")
+        self._increment_counter(outcome_bucket.setdefault("by_difficulty", {}), difficulty or "Unknown")
+        self._increment_counter(outcome_bucket.setdefault("by_source", {}), source or "Unknown")
+        if question_type:
+            self._increment_counter(outcome_bucket.setdefault("by_question_type", {}), question_type)
+
+    def _update_record_byte_stats(self, record: QuestionRecord, *, output_sizes: Dict[str, int]) -> None:
+        bytes_block = self._run_stats.setdefault("bytes", {})
+        record_payload = record.to_dict()
+        record_json_bytes = len(json.dumps(record_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        content_html_bytes = len(
+            (record.content.prompt_html or "").encode("utf-8")
+            + (record.content.stem_html or "").encode("utf-8")
+            + (record.content.rationale_html or "").encode("utf-8")
+            + "".join(option.content_html or "" for option in record.content.answer_options).encode("utf-8")
+        )
+        raw_table_row_bytes = len(
+            json.dumps(record.raw_table_row or {}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        raw_detail_payload_bytes = len(
+            json.dumps(record.raw_detail_payload or {}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+
+        bytes_block["record_json_total"] = int(bytes_block.get("record_json_total", 0)) + record_json_bytes
+        bytes_block["content_html_total"] = int(bytes_block.get("content_html_total", 0)) + content_html_bytes
+        bytes_block["raw_table_row_total"] = int(bytes_block.get("raw_table_row_total", 0)) + raw_table_row_bytes
+        bytes_block["raw_detail_payload_total"] = int(bytes_block.get("raw_detail_payload_total", 0)) + raw_detail_payload_bytes
+        bytes_block["written_question_json_total"] = int(bytes_block.get("written_question_json_total", 0)) + int(
+            output_sizes.get("json_bytes", 0)
+        )
+        bytes_block["written_question_html_total"] = int(bytes_block.get("written_question_html_total", 0)) + int(
+            output_sizes.get("html_bytes", 0)
+        )
+        bytes_block["written_question_markdown_total"] = int(
+            bytes_block.get("written_question_markdown_total", 0)
+        ) + int(output_sizes.get("markdown_bytes", 0))
+
+    @staticmethod
+    def _increment_counter(counter: Dict[str, int], key: str) -> None:
+        normalized = key or "Unknown"
+        counter[normalized] = int(counter.get(normalized, 0)) + 1
+
+    @staticmethod
+    def _increment_named_counter(counter: Dict[str, Any], key: str, *, amount: int = 1) -> None:
+        counter[key] = int(counter.get(key, 0)) + amount
 
     # ---------- Logging + files ----------
 
@@ -2479,6 +2734,11 @@ class Scraper:
         lines.append(f"- New question IDs: {len(new_dataset_rows)}")
         lines.append(f"- Modified question IDs: {len(modified_dataset_rows)}")
         lines.append(f"- Run errors: {len(run_errors)}")
+        lines.append(f"- Attempted questions: {self._run_stats.get('processing', {}).get('attempted_count', 0)}")
+        lines.append(f"- Successful questions: {self._run_stats.get('processing', {}).get('success_count', 0)}")
+        lines.append(f"- Failed questions: {self._run_stats.get('processing', {}).get('failed_count', 0)}")
+        lines.append(f"- Downloaded assets: {self._run_stats.get('assets', {}).get('files_count', 0)}")
+        lines.append(f"- Asset bytes: {self._run_stats.get('assets', {}).get('total_bytes', 0)}")
         lines.append("")
 
         lines.append("## Data Changes")
@@ -2532,11 +2792,11 @@ class Scraper:
         tmp_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
         tmp_path.replace(path)
 
-    def _load_dataset_index(self, *, dataset_path: Path, questions_dir: Path) -> Dict[str, Dict[str, Any]]:
+    def _load_dataset_index(self, *, data_path: Path, questions_dir: Path) -> Dict[str, Dict[str, Any]]:
         index: Dict[str, Dict[str, Any]] = {}
 
-        if dataset_path.exists():
-            with dataset_path.open("r", encoding="utf-8") as handle:
+        if data_path.exists():
+            with data_path.open("r", encoding="utf-8") as handle:
                 for line_number, raw_line in enumerate(handle, start=1):
                     line = raw_line.strip()
                     if not line:
@@ -2544,18 +2804,18 @@ class Scraper:
                     try:
                         payload = json.loads(line)
                     except json.JSONDecodeError:
-                        LOGGER.warning("Ignoring malformed dataset JSONL line %d in %s", line_number, dataset_path)
+                        LOGGER.warning("Ignoring malformed data JSONL line %d in %s", line_number, data_path)
                         continue
 
                     key = self._question_key_from_record_payload(payload)
                     if not key:
-                        LOGGER.warning("Dataset line %d in %s is missing question key fields", line_number, dataset_path)
+                        LOGGER.warning("Data line %d in %s is missing question key fields", line_number, data_path)
                         continue
                     index[key] = payload
             return index
 
         root_dir = questions_dir.parent.parent
-        legacy_questions_dir = root_dir / "data" / "questions"
+        legacy_questions_dir = root_dir / "dataset" / "questions"
         search_dirs = [questions_dir]
         if legacy_questions_dir.exists():
             search_dirs.append(legacy_questions_dir)
@@ -2577,7 +2837,7 @@ class Scraper:
 
                 try:
                     payload = json.loads(effective_json_path.read_text(encoding="utf-8"))
-                except Exception:  # pylint: disable=broad-except
+                except (OSError, json.JSONDecodeError):
                     LOGGER.warning("Unable to read existing question payload from %s", effective_json_path, exc_info=True)
                     continue
 
@@ -2587,21 +2847,135 @@ class Scraper:
                 index[key] = payload
 
         if index:
-            self._write_dataset_jsonl(dataset_path, index)
+            self._write_dataset_jsonl(data_path, index)
 
         return index
 
-    def _write_dataset_jsonl(self, dataset_path: Path, dataset_index: Dict[str, Dict[str, Any]]) -> None:
-        dataset_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = dataset_path.with_suffix(dataset_path.suffix + ".tmp")
+    def _write_dataset_jsonl(self, data_path: Path, dataset_index: Dict[str, Dict[str, Any]]) -> None:
+        data_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = data_path.with_suffix(data_path.suffix + ".tmp")
         with tmp_path.open("w", encoding="utf-8") as handle:
             for question_key in sorted(dataset_index.keys()):
                 payload = dataset_index[question_key]
-                normalized_payload = self._sanitize_for_json(payload)
+                normalized_payload = self._sanitize_for_json(payload, max_string_length=None)
                 normalized_payload["question_key"] = question_key
                 handle.write(json.dumps(normalized_payload, ensure_ascii=False))
                 handle.write("\n")
-        tmp_path.replace(dataset_path)
+        tmp_path.replace(data_path)
+
+    def _compute_global_dataset_stats(self, dataset_index: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        by_assessment: Dict[str, int] = {}
+        by_test: Dict[str, int] = {}
+        by_domain: Dict[str, int] = {}
+        by_difficulty: Dict[str, int] = {}
+        by_source: Dict[str, int] = {}
+        by_question_type: Dict[str, int] = {}
+        by_asset_source_type: Dict[str, int] = {}
+        by_asset_mime_type: Dict[str, int] = {}
+        created_run_ids: Set[str] = set()
+        modified_run_ids: Set[str] = set()
+
+        total_assets = 0
+        total_asset_bytes = 0
+        records_with_assets = 0
+        records_with_warnings = 0
+        warnings_total = 0
+        latest_modified_time: Optional[str] = None
+        records_with_original_url = 0
+
+        for payload in dataset_index.values():
+            metadata = payload.get("metadata") if isinstance(payload, dict) else {}
+            metadata = metadata if isinstance(metadata, dict) else {}
+
+            assessment = str(metadata.get("assessment") or "Unknown")
+            test = str(metadata.get("test") or "Unknown")
+            domain = str(metadata.get("domain") or "Unknown")
+            difficulty = str(metadata.get("difficulty") or "Unknown")
+            source = str(payload.get("source") or "Unknown")
+
+            content = payload.get("content") if isinstance(payload, dict) else {}
+            content = content if isinstance(content, dict) else {}
+            question_type = str(content.get("question_type") or "Unknown")
+
+            self._increment_counter(by_assessment, assessment)
+            self._increment_counter(by_test, test)
+            self._increment_counter(by_domain, domain)
+            self._increment_counter(by_difficulty, difficulty)
+            self._increment_counter(by_source, source)
+            self._increment_counter(by_question_type, question_type)
+
+            original_url = self._clean_nullable(metadata.get("original_url"))
+            if original_url:
+                records_with_original_url += 1
+
+            assets = payload.get("assets") if isinstance(payload, dict) else []
+            assets = assets if isinstance(assets, list) else []
+            if assets:
+                records_with_assets += 1
+            total_assets += len(assets)
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                source_type = str(asset.get("source_type") or "unknown")
+                self._increment_counter(by_asset_source_type, source_type)
+
+                mime_type = str(asset.get("mime_type") or "unknown")
+                self._increment_counter(by_asset_mime_type, mime_type)
+
+                size_bytes = asset.get("size_bytes")
+                if isinstance(size_bytes, int):
+                    total_asset_bytes += size_bytes
+
+            parse_warnings = payload.get("parse_warnings") if isinstance(payload, dict) else []
+            parse_warnings = parse_warnings if isinstance(parse_warnings, list) else []
+            if parse_warnings:
+                records_with_warnings += 1
+                warnings_total += len(parse_warnings)
+
+            lifecycle = payload.get("lifecycle") if isinstance(payload, dict) else {}
+            lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+            created_run_id = self._clean_nullable(lifecycle.get("created_run_id"))
+            modified_run_id = self._clean_nullable(lifecycle.get("modified_run_id"))
+            modified_time = self._clean_nullable(lifecycle.get("modified_time"))
+
+            if created_run_id:
+                created_run_ids.add(created_run_id)
+            if modified_run_id:
+                modified_run_ids.add(modified_run_id)
+            if modified_time and (latest_modified_time is None or modified_time > latest_modified_time):
+                latest_modified_time = modified_time
+
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "generated_at_utc": _utc_now_iso(),
+            "total_records": len(dataset_index),
+            "by_assessment": dict(sorted(by_assessment.items())),
+            "by_test": dict(sorted(by_test.items())),
+            "by_domain": dict(sorted(by_domain.items())),
+            "by_difficulty": dict(sorted(by_difficulty.items())),
+            "by_source": dict(sorted(by_source.items())),
+            "by_question_type": dict(sorted(by_question_type.items())),
+            "assets": {
+                "records_with_assets": records_with_assets,
+                "total_assets": total_assets,
+                "total_asset_bytes": total_asset_bytes,
+                "by_source_type": dict(sorted(by_asset_source_type.items())),
+                "by_mime_type": dict(sorted(by_asset_mime_type.items())),
+            },
+            "parsing": {
+                "records_with_warnings": records_with_warnings,
+                "warnings_total": warnings_total,
+            },
+            "metadata_completeness": {
+                "records_with_original_url": records_with_original_url,
+                "records_missing_original_url": len(dataset_index) - records_with_original_url,
+            },
+            "lifecycle": {
+                "created_run_ids_count": len(created_run_ids),
+                "modified_run_ids_count": len(modified_run_ids),
+                "latest_modified_time": latest_modified_time,
+            },
+        }
 
     def _apply_record_lifecycle(
         self,
@@ -2617,7 +2991,7 @@ class Scraper:
         if existing_file_present:
             try:
                 existing_payload = json.loads(json_path.read_text(encoding="utf-8"))
-            except Exception:  # pylint: disable=broad-except
+            except (OSError, json.JSONDecodeError):
                 LOGGER.warning("Could not read prior question payload from %s; treating as modified", json_path, exc_info=True)
 
         current_payload = record.to_dict()

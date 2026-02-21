@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="204">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="390" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="700">Difficulty Distribution by Question Type</text>
+<rect x="390" y="64" width="14" height="14" fill="#16a34a" opacity="0.9" />
+<text x="410" y="76" font-family="Arial, sans-serif" font-size="12">Easy</text>
+<rect x="530" y="64" width="14" height="14" fill="#d97706" opacity="0.9" />
+<text x="550" y="76" font-family="Arial, sans-serif" font-size="12">Medium</text>
+<rect x="670" y="64" width="14" height="14" fill="#dc2626" opacity="0.9" />
+<text x="690" y="76" font-family="Arial, sans-serif" font-size="12">Hard</text>
+<text x="380" y="124" text-anchor="end" font-family="Arial, sans-serif" font-size="13">Multiple Choice</text>
+<rect x="390.00" y="109" width="284.55" height="20" fill="#16a34a" opacity="0.88" />
+<rect x="674.55" y="109" width="250.79" height="20" fill="#d97706" opacity="0.88" />
+<rect x="925.34" y="109" width="214.66" height="20" fill="#dc2626" opacity="0.88" />
+<text x="1148" y="124" font-family="Arial, sans-serif" font-size="12">2865</text>
+<text x="380" y="156" text-anchor="end" font-family="Arial, sans-serif" font-size="13">Student-Produced Response</text>
+<rect x="390.00" y="141" width="158.19" height="20" fill="#16a34a" opacity="0.88" />
+<rect x="548.19" y="141" width="241.94" height="20" fill="#d97706" opacity="0.88" />
+<rect x="790.12" y="141" width="349.88" height="20" fill="#dc2626" opacity="0.88" />
+<text x="1148" y="156" font-family="Arial, sans-serif" font-size="12">403</text>
+</svg>

@@ -289,7 +289,7 @@ class AssetDownloader:
                 )
             seen[url] = asset
             return asset.local_path, asset
-        except Exception as exc:  # pylint: disable=broad-except
+        except (AssetDownloadError, OSError, RuntimeError, ValueError, requests.RequestException) as exc:
             self._report_anomaly(
                 {
                     "category": "asset_download_error",

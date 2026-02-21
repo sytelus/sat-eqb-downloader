@@ -10,7 +10,7 @@ Core goals:
 - resumable, restartable execution with full run history
 
 ## End-to-End Flow
-1. Resolve output root and initialize directories (`dataset/`, `runs/`, `state/`, `todo/`).
+1. Resolve output root and initialize directories (`data/`, `runs/`, `state/`, `todo/`).
 2. Load/validate lookup catalog.
 3. Build query payload and fetch filtered table rows.
 4. Determine candidate set using persistent profile state:
@@ -27,9 +27,11 @@ Core goals:
    - write per-question output
    - persist success/failure state atomically
    - tag persisted record lifecycle (`created_run_id`, `modified_run_id`, `create_time`, `modified_time`)
-   - update canonical `dataset.jsonl`
+   - update attempt/success/failure counters and breakdown stats (domain/category, difficulty, source, question type)
+   - update canonical `data.jsonl`
    - write run progress checkpoint
-7. Emit run summary, detailed stats, TODO summaries, logs, and history entries.
+7. Recompute global dataset-state statistics and persist `data-stats.json`.
+8. Emit run summary, detailed stats, TODO summaries, logs, and history entries.
 
 ## Key Modules
 - `src/college_board_scraper/core.py`
@@ -46,8 +48,16 @@ Core goals:
 - `src/college_board_scraper/models.py`
   - Normalized output dataclasses.
   - Includes full raw source payload storage.
+- `src/college_board_scraper/urls.py`
+  - Deterministic official-site URL builder for `metadata.original_url`.
+- `src/college_board_scraper/markdown_export.py`
+  - HTML/MathML -> Markdown renderer for per-question `question.md`.
 - `src/college_board_scraper/cli.py`
   - CLI argument parsing and run-mode selection.
+- `scripts/backfill_dataset_outputs.py`
+  - Maintenance tool to backfill `metadata.original_url`, regenerate `question.md`, and refresh `data-stats.json`.
+- `scripts/generate_state_standards_report.py`
+  - Analytics tool that generates `state_standards.md` + SVG charts in `report_assets/`.
 
 ## Resumability Model
 Resumability is profile-based:
@@ -82,12 +92,15 @@ Per run (`runs/<run_id>/`):
 - `new_ids.csv` / `modified_ids.csv`: dataset deltas for the run
 
 Per question:
-- `parse_warnings` captured in output JSON and surfaced in rendered HTML.
+- `question.json`, `question.html`, and `question.md` are written per question.
+- `parse_warnings` captured in output JSON and surfaced in rendered outputs.
+- `metadata.original_url` stores deterministic official-site reference URL.
 
 Canonical dataset:
-- `dataset/questions/<question_dir>/question.json` and `question.html`
-- `dataset.jsonl` root snapshot updated on each run
-- legacy `data/questions` content is auto-migrated into `dataset/questions`
+- `data/questions/<question_dir>/question.json`, `question.html`, and `question.md`
+- `data.jsonl` root snapshot updated on each run
+- legacy `dataset/questions` content is auto-migrated into `data/questions`
+- `data-stats.json` maintains global current-state dataset statistics
 
 Global TODO loop (`todo/`):
 - `todo-items.jsonl`: append-only anomaly events
@@ -98,13 +111,17 @@ Global TODO loop (`todo/`):
 Run stats include:
 - timing (query/prefetch/process/total)
 - selection (available/requested/candidate/skipped reason counts)
-- processing (processed/success/failed)
+- processing (attempted/processed/success/failed + failure error types)
 - source mix (digital/legacy)
+- question breakdown by domain/category, difficulty, source, and question type
 - asset counts/bytes by asset source type
+- payload/output byte totals
 - request totals by endpoint and status code
+- response-byte totals by endpoint and run total
 - throttle sleep totals
 - TODO anomaly counts by category/severity
 - progress checkpoint write count
+- metadata completeness counts (`records_with_original_url`, `records_missing_original_url`)
 
 ## Confidence Register
 - High confidence: endpoint contracts and filter semantics currently used by site.
@@ -118,4 +135,3 @@ Run stats include:
 1. Add optional schema validation checks against `SCHEMA.md` examples in CI.
 2. Add TODO lifecycle management (`open`/`resolved`) tooling and triage CLI.
 3. Add configurable parallelism with global request budget control.
-4. Add optional content deduplication reports across profiles.

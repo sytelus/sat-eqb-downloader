@@ -6,6 +6,7 @@ Python library and CLI for downloading SAT Suite Educator Question Bank content 
 - No Selenium, Firefox, or browser drivers.
 - API-driven retrieval from the same backend endpoints used by the official website.
 - Full HTML capture for long questions and long rationales (no screenshot truncation).
+- Per-question markdown export (`question.md`) with readable structure and math rendered into LaTeX-style markers.
 - Downloads and rewrites assets for offline rendering:
   - images
   - diagrams/charts
@@ -20,6 +21,7 @@ Python library and CLI for downloading SAT Suite Educator Question Bank content 
 - Request pacing for rate-limit friendliness.
 - Structured run logs and per-question parse warnings.
 - Runtime anomaly detection with persistent TODO backlog for parser/schema improvements.
+- Adds `metadata.original_url` reference for each question payload.
 
 ## Ubuntu 24.04 Compatibility
 Works on Ubuntu 24.04 with standard Python tooling.
@@ -48,8 +50,9 @@ Behavior:
 - If `OUT_DIR` is not set, current directory is used.
 
 Generated structure:
-- `sat_eqb/dataset/questions/...`
-- `sat_eqb/dataset.jsonl` (main dataset, updated after each run)
+- `sat_eqb/data/questions/...`
+- `sat_eqb/data.jsonl` (main dataset, updated after each run)
+- `sat_eqb/data-stats.json` (global current-state dataset stats)
 - `sat_eqb/runs/<run_id>/...` where `<run_id>` is UTC date-time stamped
 - `sat_eqb/state/profiles/<profile_id>.json`
 - `sat_eqb/state/latest-run.json`
@@ -59,7 +62,13 @@ Generated structure:
 - `sat_eqb/todo/todo-items.jsonl`
 
 Compatibility note:
-- Existing legacy question folders under `sat_eqb/data/questions` are migrated into `sat_eqb/dataset/questions` on subsequent runs.
+- Existing legacy question folders under `sat_eqb/dataset/questions` are migrated into `sat_eqb/data/questions` on subsequent runs.
+
+Per-question files under `sat_eqb/data/questions/<question_dir>/`:
+- `question.json`
+- `question.html`
+- `question.md`
+- `assets/*`
 
 ## Schema
 See [`SCHEMA.md`](SCHEMA.md) for complete, up-to-date file schemas for:
@@ -242,6 +251,15 @@ Parse irregularities and unexpected source formats are captured as:
 - warning/error logs in `run.log`
 - persistent TODO backlog in `sat_eqb/todo/TODO.md`
 
+Run stats include, at minimum:
+- attempted/success/failed question counts
+- failure counts by exception type
+- counts by domain/category, difficulty, source, and question type
+- asset counts and bytes
+- payload/output byte totals
+- request totals, status codes, endpoint counts, and response-byte totals
+- dataset delta counts (`new`, `modified`, `unchanged`)
+
 ## Self-Improvement TODO Loop
 When the scraper encounters unanticipated situations, it records them as TODO items instead of silently dropping context:
 - new/unrecognized source payload fields
@@ -269,6 +287,7 @@ Run summaries prominently include TODO counts and pointers so triage can happen 
 ## Metadata and Source Completeness
 Each question output includes:
 - normalized metadata fields for downstream usage
+- canonical source-site reference URL (`metadata.original_url`)
 - full raw table row payload (`raw_table_row`)
 - full raw detail payload (`raw_detail_payload`)
 - compatibility alias (`raw_payload`)
@@ -280,12 +299,21 @@ Each question output includes:
 
 This preserves complete source data while providing a stable normalized model.
 
-The root-level main dataset file `sat_eqb/dataset.jsonl` is updated after each run and includes these lifecycle tags for every record.
+Original URL note:
+- Current College Board SPA does not expose a guaranteed direct deep-link that always opens a specific question modal by URL alone.
+- `metadata.original_url` therefore points to the canonical official route plus identifying query parameters so the question context can be reproduced and located reliably.
+
+The root-level main dataset file `sat_eqb/data.jsonl` is updated after each run and includes these lifecycle tags for every record.
+
+Global dataset-state stats are maintained continuously in:
+- `sat_eqb/data-stats.json`
+
+These global stats cover current dataset totals and breakdowns by assessment, test, domain/category, difficulty, source, question type, asset details, and parse-warning prevalence.
 
 ## Testing
 Fast local tests:
 ```bash
-pytest -q tests/test_assets_and_helpers.py
+pytest -q
 ```
 
 Live integration tests:
@@ -293,6 +321,29 @@ Live integration tests:
 RUN_LIVE_TESTS=1 pytest -q tests/test_live_integration.py
 ```
 
+## Post-Run Maintenance and Analytics
+Backfill existing downloaded dataset with:
+- `metadata.original_url`
+- regenerated `question.md` for every question
+- refreshed `data-stats.json`
+
+```bash
+python3 scripts/backfill_dataset_outputs.py --root-dir /path/to/out/sat_eqb
+```
+
+Generate standards distribution report and chart assets:
+```bash
+python3 scripts/generate_state_standards_report.py \
+  --root-dir /path/to/out/sat_eqb \
+  --report-path state_standards.md \
+  --assets-dir report_assets
+```
+
+This writes:
+- `state_standards.md` (analysis report)
+- `report_assets/*.svg` (charts referenced by the report)
+
 ## Documentation Map
 - Architecture and implementation notes: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Output/run schema: [`SCHEMA.md`](SCHEMA.md)
+- Standards analysis report (generated): [`state_standards.md`](state_standards.md)
