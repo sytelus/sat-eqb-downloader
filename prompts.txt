@@ -1,0 +1,65 @@
+- Find out how to get URL for each question to original website and add that URL in question.json (if it is not already there) so user can view original rendering of the question by going to that URL.
+- Examine data you downloaded and create your interpretation of what each schema element contains. Update SCHEMA.md with documentation for each schema element, what it contains, any observed constraints and relationship. Make sure to also update SCHEMA.md with any missing elements and resolve any inconsistency in documentation. Make SCHEMA.md highly readable. If a schema element contains fixed set of less than 10 values (i.e. enum type values), note those values and meaning for each.
+- Conduct a comprehensive data analysis of distribution of quetions, their difficulty level, grading, question types, asset counts and anything else that may be interesting for state standards. The goal is to figure out which state standards have too low or high distribution, how difficulty level is spread out between state standards, how difficulty level varies with answer types and/or asset types etc. You should think about how these insights would be useful to test takers. Create details report for this task in state_standards.md with plots, graphs, tables as needed. You can store assets in folder "report_assets".
+- Examine data and figure out strategy to create clean markdown version of each question which will also contain answer, justification of answer and other metadata. You must convert complex HTML markup for math expressions, symbols etc is clean markdown latex based markup inside $...$ or $$...$$ as appropriate. This may need manual effort. For input elements such as radio buttons or text boxes, you may use inline HTML elements. You should store this markdown version in question.md file. Make sure this file is nicely readable and contains all the meta data at the end so user does not need to scroll down to see actual question content. Make sure to put original URL for the question at the top of markdown content.
+
+---
+
+Let's re-organize outputs properly. In the project output dir, you should have "runs" folder within which you should create date-time stamped folder within with you should keep log files, stats.yaml containing all interesting stats, todo-items.md containing any code improvements, unanticipated scenarios, errors etc found during the run, modified_ids.csv containing questions that were updated, new_ids.csv containing ids of questions added. The project output folder itself should contain main dataset that should be updated after each run. The run directory may also contain any other files you deem appropriate to keep for tracking and record. The data in dataset should be tagged with created_run_id and modified_run_id so we can track which runs the data was created and modified. It should also include create_time, modified_time.
+
+Make sure all of these id documented in appropriate documents.
+
+---
+
+Let's re-organize outputs properly. In the project output dir, you should have "runs" folder within which you should create date-time stamped folder within with you should keep log files, stats.yaml containing all interesting stats, todo-items.md containing any code improvements, unanticipated scenarios, errors etc found during the run, modified_ids.csv containing questions that were updated, new_ids.csv containing ids of questions added. The project output folder itself should contain main dataset that should be updated after each run. The run directory may also contain any other files you deem appropriate to keep for tracking and record. The data in dataset should be tagged with created_run_id and modified_run_id so we can track which runs the data was created and modified. It should also include create_time, modified_time.
+
+Make sure all of these id documented in appropriate documents.
+
+---
+
+Make sure the code is fully restartable and it saves progress frequently so if run is terminated due to reboots or crashes, progress is not lost. Furthermore, we need to robustify the code by making sure we handle any unanticipated situation gracefully, such as new question format, change in content layout, new asset types, new instructions, foot notes, missing metadata or new metadata etc. When such situation is identified, you should flag them in a separate TODO file with all the required information for later investigation so the code can be improved for next runs and those questions get downloaded properly in the next run. You should make sure any such TODOs are prominently flagged at the end of the run so we can establish self-improvement loop.
+
+
+
+
+---
+
+Your job is to improve this repository for downloading SAT Educators Questions Bank from official college board website. Towards this end, you will perform the following tasks:
+
+1. Thoroughly understand this code base and various intricacies.
+2. Document this code base from your understanding. For any parts where you do not have high confidence understanding, add your note for confidence level and future TODO item to understand it better.
+3. Make this code workable on Ubuntu 24.04 and without unusual dependencies such as Firefox browser. Improve dependencies and related code such that code reliably works without having to create separate environment, breaking other packages and making sure dependency versioning includes >= or <= instead of requiring exact versions.
+4. Make sure code parses content accurately from current website.
+5. Make sure code downloads all assets needed to render question correctly including images, diagrams, charts, tables etc.
+6. Make sure code can handle long questions correctly.
+7. Make sure code downloads all of the metadata correctly.
+8. Test out the code and verify all of above works accurately and reliably.
+
+---
+
+- Ensure code obeys any known rate limits for this website.
+- Review schema of downloaded data and make sure it is complete to accommodate all the source data. Expand this schema as and when needed. Document this schema in SCHEMA.md and keep it upto date at all time. Link this in README.md.
+- Make sure all documentation for all of the code is upto date.
+- Review this code thoroughly, find and fix any issues.
+- Make sure any errors in parsing, unexpected content formats, errors and reliability is properly logged during scrapping of the content.
+- Ensure code is re-startable so that it doesn't attempt to download same content again that was already downloaded successfully but retries content with error and downloads any new content. Provide flags to download only failed content or only new content (both true by default).
+- Produce complete statistics of all aspects of run.
+- Keep history of runs.
+- Make sure run history and actual data does not get uploaded in GitHub.
+- Produce all run history and data in $OUT_DIR/sat_eqb folder.
+- Allow run to be terminated at any time and any new run start from where last run successfully ended unless --restart flag was applied.
+- Thoroughly document command line arguments in README.md
+- Document all the features of this code base in README.md.
+
+---
+
+Let's refine the IDs in common_core/common_core_full3.yaml. For K-G through K-8 courses, IDs are like 5.NBT.B.7. Here "B" is redundant as 7 uniquely identifies topic. However, 5.NBT.B is needed for one level higher up. So, we shouldn't change 5.NBT.B but 5.NBT.B.7 can be changed to 5.NBT.7. Similarly sub-topic "5.NF.B.4.a" can be changed to 5.NF.4.a. In other words, we only want to change 4th and 5th level IDs for K-G through K-8 courses and make them one level less deep.
+
+For high school courses, IDs are like HSN-CN.A.1 and HSA-APR.C.5. Here, we don't need HS prefix and dash should be converted to "." and similar to above 3rd level is redundant. This means HSN-CN.A.1 and HSA.APR.C.5 would become N.CN.1 and A.APR.5 respectively. Similar to above, one level up IDs would N.CN.A and A.APR.C. One ore level high up IDs would become N.CN and A.APR. One more higher level up would be just N and A.
+
+Make above update to IDs. If any confusion or anomalies, report it at the end.
+
+
+---
+
+In common_core/common_core_full3.yaml, lets merge target_abilities and target_abilities_desc when both of these elements exist for a course. The target_abilities may have some initial description followed by list of numbered bullet points followed by some wrap up description. The target_abilities_desc then expands on each bullet point in target_abilities. The way you will do merge is as follows: Take everything in target_abilities. For each bullet point in target_abilities, surround them by ** and **. Then append colon and space and then corresponding description of that bullet point from target_abilities_desc. This final combined text will then go in target_abilities_desc and you can delete target_abilities. If you see any anomalies or loss of information then report it at the end. The idea is that there should not be any loss of information.
